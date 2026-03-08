@@ -29,6 +29,7 @@ print(f"Using device: {DEVICE}")
 
 # %%
 
+
 class Codec(ABC):
     """Minimal interface every codec wrapper must satisfy."""
 
@@ -72,6 +73,7 @@ class Codec(ABC):
 
 # ── Music2Latent ─────────────────────────────────────────────────────────
 
+
 class Music2LatentCodec(Codec):
     """Wraps ``music2latent.EncoderDecoder``.
 
@@ -113,13 +115,16 @@ class Music2LatentCodec(Codec):
 
 # ── DAC (Descript Audio Codec) ───────────────────────────────────────────
 
+
 class DACCodec(Codec):
     """Wraps ``dac.DAC``, bypassing RVQ to use continuous encoder output.
 
     ~86 Hz, 1024-dim latents at 44.1 kHz.  License: MIT.
     """
 
-    def __init__(self, model_type: str = "44khz", device: Optional[torch.device] = None):
+    def __init__(
+        self, model_type: str = "44khz", device: Optional[torch.device] = None
+    ):
         import dac
 
         self._device = device or DEVICE
@@ -163,9 +168,11 @@ class DACCodec(Codec):
 
 # %%
 
+
 @dataclass
 class Augmentation:
     """Simple pre-encoding augmentation config."""
+
     pitch_shifts: list[int] = field(default_factory=lambda: [-5, -2, 2, 5])
     volume_scales: list[float] = field(default_factory=lambda: [0.3, 0.7])
     enabled: bool = False
@@ -273,13 +280,15 @@ class GranularCodebook:
 
 # %%
 
+
 @dataclass
 class MatchResult:
     """Everything returned by the matching step."""
-    hybrid_latents: torch.Tensor    # (1, dim, T') — the reassembled sequence
-    target_latents: torch.Tensor    # (1, dim, T_target)
-    distances: np.ndarray           # (n_target_grains, n_codebook_grains)
-    selected_indices: list[int]     # which codebook grain was chosen per step
+
+    hybrid_latents: torch.Tensor  # (1, dim, T') — the reassembled sequence
+    target_latents: torch.Tensor  # (1, dim, T_target)
+    distances: np.ndarray  # (n_target_grains, n_codebook_grains)
+    selected_indices: list[int]  # which codebook grain was chosen per step
 
 
 def match_target(
@@ -384,6 +393,7 @@ def match_target(
 # Decode the hybrid latent sequence, normalize, and play back.
 
 # %%
+
 
 def reconstruct(
     result: MatchResult,
@@ -508,17 +518,19 @@ SOURCE_FILES = [
 ]
 TARGET_FILE = ""  # "audio/target_voice.wav"
 
-GRAIN_SIZE = 2       # consecutive latent vectors per grain
-STRIDE = 1           # hop between grains (1 = maximum overlap)
-TEMPERATURE = 0.01   # lower = more faithful; higher = more random
-THRESHOLD = 1.0      # max cosine distance before falling back to target grain
-AUGMENT = False       # apply pitch/volume augmentation to source corpus
+GRAIN_SIZE = 2  # consecutive latent vectors per grain
+STRIDE = 1  # hop between grains (1 = maximum overlap)
+TEMPERATURE = 0.01  # lower = more faithful; higher = more random
+THRESHOLD = 1.0  # max cosine distance before falling back to target grain
+AUGMENT = False  # apply pitch/volume augmentation to source corpus
 
 # ── Build ────────────────────────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     codec_m2l = Music2LatentCodec(device=DEVICE)
     aug = Augmentation(enabled=AUGMENT)
-    codebook_m2l = GranularCodebook(codec_m2l, grain_size=GRAIN_SIZE, stride=STRIDE, augmentation=aug)
+    codebook_m2l = GranularCodebook(
+        codec_m2l, grain_size=GRAIN_SIZE, stride=STRIDE, augmentation=aug
+    )
     codebook_m2l.build(SOURCE_FILES)
 else:
     print("Set SOURCE_FILES and TARGET_FILE above, then re-run this cell.")
@@ -528,7 +540,8 @@ else:
 # ── Match and reconstruct ───────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     result_m2l = match_target(
-        TARGET_FILE, codebook_m2l,
+        TARGET_FILE,
+        codebook_m2l,
         temperature=TEMPERATURE,
         threshold=THRESHOLD,
     )
@@ -566,11 +579,14 @@ if SOURCE_FILES and TARGET_FILE:
         f"stride={dac_stride}"
     )
 
-    codebook_dac = GranularCodebook(codec_dac, grain_size=dac_grain_size, stride=dac_stride)
+    codebook_dac = GranularCodebook(
+        codec_dac, grain_size=dac_grain_size, stride=dac_stride
+    )
     codebook_dac.build(SOURCE_FILES)
 
     result_dac = match_target(
-        TARGET_FILE, codebook_dac,
+        TARGET_FILE,
+        codebook_dac,
         temperature=TEMPERATURE,
         threshold=THRESHOLD,
     )
