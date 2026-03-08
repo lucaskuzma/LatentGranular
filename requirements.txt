@@ -1,0 +1,9 @@
+torch>=2.1
+music2latent
+descript-audio-codec
+librosa
+soundfile
+scipy
+numpy
+matplotlib
+IPython
