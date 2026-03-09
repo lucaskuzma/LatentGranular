@@ -21,14 +21,23 @@ def _find_zero_crossing_before(audio: np.ndarray, pos: int) -> int:
     return pos
 
 
+def _is_silent(audio: np.ndarray, top_db: float = 40.0) -> bool:
+    """True if the audio is below the silence threshold."""
+    rms = np.sqrt(np.mean(audio ** 2))
+    if rms == 0:
+        return True
+    return 20 * np.log10(rms / np.max(np.abs(audio) + 1e-10)) < -top_db
+
+
 def _chunk_audio(
     audio: np.ndarray,
     sr: int,
     max_length_ms: float,
     max_count: int,
+    silence_top_db: float = 40.0,
 ) -> list[np.ndarray]:
     """Split *audio* into chunks of at most *max_length_ms*, trimmed at zero
-    crossings.  Returns up to *max_count* chunks."""
+    crossings.  Silent chunks are dropped.  Returns up to *max_count* chunks."""
     max_samples = int(sr * max_length_ms / 1000.0)
     chunks: list[np.ndarray] = []
     pos = 0
@@ -38,9 +47,17 @@ def _chunk_audio(
         if end < len(audio):
             end = _find_zero_crossing_before(audio, end)
         chunk = audio[pos:end]
-        if len(chunk) > 0:
-            chunks.append(chunk)
         pos = end
+
+        if len(chunk) == 0:
+            continue
+
+        # trim leading/trailing silence from each chunk
+        trimmed, _ = librosa.effects.trim(chunk, top_db=silence_top_db)
+        if len(trimmed) == 0 or _is_silent(trimmed, silence_top_db):
+            continue
+
+        chunks.append(trimmed)
 
     return chunks
 
