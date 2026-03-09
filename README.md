@@ -27,11 +27,12 @@ the source's timbral character — no model training required.
 | **Codebook stride** | Stride parameter only affected target, not codebook building | Stride applied consistently to both source and target segmentation |
 | **Persistence** | None | Codebooks can be saved/loaded with `torch.save` |
 | **Visualization** | None | Distance heatmaps, grain selection plots, spectrograms |
+| **Preprocessing** | None (augmentation in-memory, re-computed every run) | Chunking at zero crossings + augmentation saved to disk, cached in `<stem>_chunks/` folders |
 | **DAC comparison** | N/A | Automatic grain-size scaling to match time windows across codecs |
 
 ## Setup
 
-Requires Python 3.10+.
+Requires Python 3.11+ (uses `tomllib`).
 
 ```bash
 # create and activate a virtual environment

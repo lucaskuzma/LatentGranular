@@ -4,7 +4,7 @@
 # of a pretrained neural audio codec, enabling training-free timbre transfer.
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -158,15 +158,6 @@ class DACCodec(Codec):
 # overlapping grains, and stores them for efficient nearest-neighbour lookup.
 
 
-@dataclass
-class Augmentation:
-    """Simple pre-encoding augmentation config."""
-
-    pitch_shifts: list[int] = field(default_factory=lambda: [-5, -2, 2, 5])
-    volume_scales: list[float] = field(default_factory=lambda: [0.3, 0.7])
-    enabled: bool = False
-
-
 class GranularCodebook:
     """A codebook of latent grains extracted from a source audio corpus."""
 
@@ -175,25 +166,21 @@ class GranularCodebook:
         codec: Codec,
         grain_size: int = 2,
         stride: int = 1,
-        augmentation: Optional[Augmentation] = None,
     ):
         self.codec = codec
         self.grain_size = grain_size
         self.stride = stride
-        self.aug = augmentation or Augmentation()
 
         self.grains: Optional[torch.Tensor] = None  # (N, dim, grain_size)
         self._source_latents: Optional[torch.Tensor] = None
 
     # ── public API ───────────────────────────────────────────────────────
 
-    def build(self, paths: Sequence[str | Path], max_duration: Optional[float] = None):
+    def build(self, paths: Sequence[str | Path]):
         """Encode source files and segment into grains.
 
-        Parameters
-        ----------
-        paths : sequence of file paths
-        max_duration : if set, truncate each file to this many seconds
+        Preprocessing (chunking, augmentation) should already be done —
+        *paths* is the flat list of WAV files to encode.
         """
         all_latents: list[torch.Tensor] = []
         sr = self.codec.sample_rate
@@ -201,12 +188,8 @@ class GranularCodebook:
         for p in paths:
             print(f"  Encoding {p} ...")
             y, _ = librosa.load(str(p), sr=sr, mono=True)
-            if max_duration is not None:
-                y = y[: int(sr * max_duration)]
-            variants = self._augmented_variants(y, sr)
-            for v in variants:
-                lat = self.codec.encode(v)  # (1, dim, T)
-                all_latents.append(lat.cpu())
+            lat = self.codec.encode(y)  # (1, dim, T)
+            all_latents.append(lat.cpu())
 
         full = torch.cat(all_latents, dim=-1)  # (1, dim, total_T)
         self._source_latents = full
@@ -249,16 +232,6 @@ class GranularCodebook:
         for i in range(0, T - self.grain_size + 1, self.stride):
             grains.append(latents[0, :, i : i + self.grain_size])
         return torch.stack(grains)  # (N, dim, grain_size)
-
-    def _augmented_variants(self, audio: np.ndarray, sr: int) -> list[np.ndarray]:
-        variants = [audio]
-        if not self.aug.enabled:
-            return variants
-        for vol in self.aug.volume_scales:
-            variants.append(audio * vol)
-        for steps in self.aug.pitch_shifts:
-            variants.append(librosa.effects.pitch_shift(audio, sr=sr, n_steps=steps))
-        return variants
 
 
 # %% Target Matcher
@@ -505,27 +478,46 @@ GRAIN_SIZE: int = CFG["grains"]["size"]
 STRIDE: int = CFG["grains"]["stride"]
 TEMPERATURE: float = CFG["matching"]["temperature"]
 THRESHOLD: float = CFG["matching"]["threshold"]
-AUGMENT: bool = CFG.get("augmentation", {}).get("enabled", False)
+
+_prep = CFG.get("preprocessing", {})
+CHUNK_ENABLED: bool = _prep.get("chunk", False)
+CHUNK_MAX_MS: float = _prep.get("max_length_ms", 4000)
+CHUNK_MAX_COUNT: int = _prep.get("max_count", 64)
+AUGMENT_ENABLED: bool = _prep.get("augment", False)
+PITCH_SHIFTS: list[int] = _prep.get("pitch_shifts", [-5, -2, 2, 5])
+VOLUME_SCALES: list[float] = _prep.get("volume_scales", [0.3, 0.7])
 
 print(f"Source: {SOURCE_FILES}")
 print(f"Target: {TARGET_FILE}")
 print(f"Grains: size={GRAIN_SIZE}, stride={STRIDE}")
 print(f"Matching: temperature={TEMPERATURE}, threshold={THRESHOLD}")
-print(f"Augment: {AUGMENT}")
+print(f"Preprocessing: chunk={CHUNK_ENABLED} (max {CHUNK_MAX_MS}ms, max {CHUNK_MAX_COUNT}), augment={AUGMENT_ENABLED}")
+
+# %% Preprocess sources — chunk and/or augment to disk
+
+from utils import prepare_source_files
+
+if SOURCE_FILES:
+    prepared_files = prepare_source_files(
+        SOURCE_FILES,
+        sr=44_100,
+        chunk_enabled=CHUNK_ENABLED,
+        max_length_ms=CHUNK_MAX_MS,
+        max_count=CHUNK_MAX_COUNT,
+        augment_enabled=AUGMENT_ENABLED,
+        pitch_shifts=PITCH_SHIFTS,
+        volume_scales=VOLUME_SCALES,
+    )
+    print(f"\n{len(prepared_files)} files ready for encoding")
+else:
+    print("Set SOURCE_FILES in config.toml, then re-run.")
 
 # %% Run: Music2Latent — Build codebook
 
 if SOURCE_FILES and TARGET_FILE:
     codec_m2l = Music2LatentCodec(device=DEVICE)
-    _aug_cfg = CFG.get("augmentation", {})
-    aug = Augmentation(
-        enabled=AUGMENT,
-        **{k: _aug_cfg[k] for k in ("pitch_shifts", "volume_scales") if k in _aug_cfg},
-    )
-    codebook_m2l = GranularCodebook(
-        codec_m2l, grain_size=GRAIN_SIZE, stride=STRIDE, augmentation=aug
-    )
-    codebook_m2l.build(SOURCE_FILES)
+    codebook_m2l = GranularCodebook(codec_m2l, grain_size=GRAIN_SIZE, stride=STRIDE)
+    codebook_m2l.build(prepared_files)
 else:
     print("Set SOURCE_FILES and TARGET_FILE in config.toml, then re-run.")
 
@@ -569,7 +561,7 @@ if SOURCE_FILES and TARGET_FILE:
     codebook_dac = GranularCodebook(
         codec_dac, grain_size=dac_grain_size, stride=dac_stride
     )
-    codebook_dac.build(SOURCE_FILES)
+    codebook_dac.build(prepared_files)
 
     result_dac = match_target(
         TARGET_FILE,
