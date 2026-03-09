@@ -47,20 +47,15 @@ use (from HuggingFace Hub).
 
 ## Usage
 
-Open `latent_granular.py` in Cursor / VS Code and run the `# %%` cells
-interactively. The key configuration cell is near the bottom:
+Copy the example config and edit it with your audio paths and parameters:
 
-```python
-SOURCE_FILES = ["audio/source_drums.wav"]
-TARGET_FILE  = "audio/target_voice.wav"
-GRAIN_SIZE   = 2      # latent vectors per grain
-STRIDE       = 1      # hop between grains
-TEMPERATURE  = 0.01   # lower = faithful, higher = random
-THRESHOLD    = 1.0    # cosine distance fallback cutoff
-AUGMENT      = False  # pitch/volume augmentation on source
+```bash
+cp config.example.toml config.toml
 ```
 
-Drop your audio files in `audio/`, set the paths, and run top-to-bottom.
+`config.toml` is gitignored so your local paths and experiments don't dirty
+the repo. Then open `latent_granular.py` in Cursor / VS Code, drop your audio
+files in `audio/`, and run the `# %%` cells top-to-bottom.
 
 ## License notes
 

@@ -506,28 +506,52 @@ def plot_min_distances(result: MatchResult):
 
 
 # %% [markdown]
-# ## Run: Music2Latent
+# ## Configuration
 #
-# Replace the paths below with your own audio files, then run the cells.
+# Reads from `config.toml` (gitignored). Copy `config.example.toml` to get
+# started:
+#
+#     cp config.example.toml config.toml
 
 # %%
 
-# ── Configuration ────────────────────────────────────────────────────────
-SOURCE_FILES = [
-    # "audio/source_drums.wav",
-]
-TARGET_FILE = ""  # "audio/target_voice.wav"
+import tomllib
 
-GRAIN_SIZE = 2  # consecutive latent vectors per grain
-STRIDE = 1  # hop between grains (1 = maximum overlap)
-TEMPERATURE = 0.01  # lower = more faithful; higher = more random
-THRESHOLD = 1.0  # max cosine distance before falling back to target grain
-AUGMENT = False  # apply pitch/volume augmentation to source corpus
+_cfg_path = Path("config.toml")
+if not _cfg_path.exists():
+    raise FileNotFoundError(
+        "config.toml not found — copy the example:\n"
+        "  cp config.example.toml config.toml"
+    )
+
+with open(_cfg_path, "rb") as f:
+    CFG = tomllib.load(f)
+
+SOURCE_FILES: list[str] = CFG["source"]["files"]
+TARGET_FILE: str = CFG["target"]["file"]
+GRAIN_SIZE: int = CFG["grains"]["size"]
+STRIDE: int = CFG["grains"]["stride"]
+TEMPERATURE: float = CFG["matching"]["temperature"]
+THRESHOLD: float = CFG["matching"]["threshold"]
+AUGMENT: bool = CFG.get("augmentation", {}).get("enabled", False)
+
+print(f"Source: {SOURCE_FILES}")
+print(f"Target: {TARGET_FILE}")
+print(f"Grains: size={GRAIN_SIZE}, stride={STRIDE}")
+print(f"Matching: temperature={TEMPERATURE}, threshold={THRESHOLD}")
+print(f"Augment: {AUGMENT}")
+
+# %% [markdown]
+# ## Run: Music2Latent
 
 # ── Build ────────────────────────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     codec_m2l = Music2LatentCodec(device=DEVICE)
-    aug = Augmentation(enabled=AUGMENT)
+    _aug_cfg = CFG.get("augmentation", {})
+    aug = Augmentation(
+        enabled=AUGMENT,
+        **{k: _aug_cfg[k] for k in ("pitch_shifts", "volume_scales") if k in _aug_cfg},
+    )
     codebook_m2l = GranularCodebook(
         codec_m2l, grain_size=GRAIN_SIZE, stride=STRIDE, augmentation=aug
     )

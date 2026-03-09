@@ -1,0 +1,24 @@
+# Copy this file to config.toml and edit to taste.
+# config.toml is gitignored so your paths and settings stay local.
+
+[source]
+files = [
+    "audio/source_drums.wav",
+    # "audio/another_source.wav",
+]
+
+[target]
+file = "audio/target_voice.wav"
+
+[grains]
+size = 2            # consecutive latent vectors per grain
+stride = 1          # hop between grains (1 = maximum overlap)
+
+[matching]
+temperature = 0.01  # lower = more faithful; higher = more random
+threshold = 1.0     # cosine distance above which the target grain is kept as-is
+
+[augmentation]
+enabled = false
+pitch_shifts = [-5, -2, 2, 5]
+volume_scales = [0.3, 0.7]
