@@ -1,11 +1,8 @@
-# %% [markdown]
-# # Latent Granular Resynthesis
-#
+# %% Setup — Latent Granular Resynthesis
 # Implementation of Tokui & Baker (2025) — "Latent Granular Resynthesis using
 # Neural Audio Codecs". Operates granular synthesis at the latent-vector level
 # of a pretrained neural audio codec, enabling training-free timbre transfer.
 
-# %% Setup and dependencies
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,13 +18,9 @@ from IPython.display import Audio, display
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 
-# %% [markdown]
-# ## Codec Abstraction Layer
-#
+# %% Codec Abstraction Layer
 # A thin wrapper so we can swap Music2Latent, DAC, or any future codec
 # without touching the granular logic.
-
-# %%
 
 
 class Codec(ABC):
@@ -160,13 +153,9 @@ class DACCodec(Codec):
         return wav.squeeze().cpu().numpy()
 
 
-# %% [markdown]
-# ## Granular Codebook
-#
+# %% Granular Codebook
 # Encodes a source audio corpus into latent vectors, segments them into
 # overlapping grains, and stores them for efficient nearest-neighbour lookup.
-
-# %%
 
 
 @dataclass
@@ -210,6 +199,7 @@ class GranularCodebook:
         sr = self.codec.sample_rate
 
         for p in paths:
+            print(f"  Encoding {p} ...")
             y, _ = librosa.load(str(p), sr=sr, mono=True)
             if max_duration is not None:
                 y = y[: int(sr * max_duration)]
@@ -271,14 +261,10 @@ class GranularCodebook:
         return variants
 
 
-# %% [markdown]
-# ## Target Matcher
-#
+# %% Target Matcher
 # Encodes the target audio, segments it the same way, and for each target
 # grain finds the best match from the codebook via cosine similarity with
 # temperature-controlled softmax sampling.
-
-# %%
 
 
 @dataclass
@@ -387,12 +373,8 @@ def match_target(
     )
 
 
-# %% [markdown]
-# ## Reconstruction and Output
-#
+# %% Reconstruction and Output
 # Decode the hybrid latent sequence, normalize, and play back.
-
-# %%
 
 
 def reconstruct(
@@ -430,12 +412,8 @@ def play_comparison(
     display(Audio(output_wav, rate=sr))
 
 
-# %% [markdown]
-# ## Visualization
-#
+# %% Visualization
 # Distance heatmaps, grain selection patterns, and spectrogram comparisons.
-
-# %%
 
 import matplotlib.pyplot as plt
 
@@ -505,15 +483,9 @@ def plot_min_distances(result: MatchResult):
     plt.show()
 
 
-# %% [markdown]
-# ## Configuration
-#
-# Reads from `config.toml` (gitignored). Copy `config.example.toml` to get
-# started:
-#
+# %% Configuration — reads from config.toml (gitignored)
+# Copy config.example.toml to get started:
 #     cp config.example.toml config.toml
-
-# %%
 
 import tomllib
 
@@ -541,10 +513,8 @@ print(f"Grains: size={GRAIN_SIZE}, stride={STRIDE}")
 print(f"Matching: temperature={TEMPERATURE}, threshold={THRESHOLD}")
 print(f"Augment: {AUGMENT}")
 
-# %% [markdown]
-# ## Run: Music2Latent
+# %% Run: Music2Latent — Build codebook
 
-# ── Build ────────────────────────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     codec_m2l = Music2LatentCodec(device=DEVICE)
     _aug_cfg = CFG.get("augmentation", {})
@@ -557,11 +527,10 @@ if SOURCE_FILES and TARGET_FILE:
     )
     codebook_m2l.build(SOURCE_FILES)
 else:
-    print("Set SOURCE_FILES and TARGET_FILE above, then re-run this cell.")
+    print("Set SOURCE_FILES and TARGET_FILE in config.toml, then re-run.")
 
-# %%
+# %% Match and reconstruct
 
-# ── Match and reconstruct ───────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     result_m2l = match_target(
         TARGET_FILE,
@@ -572,23 +541,17 @@ if SOURCE_FILES and TARGET_FILE:
     output_m2l = reconstruct(result_m2l, codec_m2l, output_path="audio/output_m2l.wav")
     play_comparison(SOURCE_FILES[0], TARGET_FILE, output_m2l, codec_m2l)
 else:
-    print("Set SOURCE_FILES and TARGET_FILE above, then re-run.")
+    print("Set SOURCE_FILES and TARGET_FILE in config.toml, then re-run.")
 
-# %%
+# %% Visualize
 
-# ── Visualize ────────────────────────────────────────────────────────────
 if SOURCE_FILES and TARGET_FILE:
     plot_distance_heatmap(result_m2l)
     plot_grain_selection(result_m2l)
     plot_min_distances(result_m2l)
     plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_m2l, codec_m2l.sample_rate)
 
-# %% [markdown]
-# ## Run: DAC (MIT licensed)
-#
-# Same source/target through the Descript Audio Codec for comparison.
-
-# %%
+# %% Run: DAC (MIT licensed) — same source/target for comparison
 
 if SOURCE_FILES and TARGET_FILE:
     codec_dac = DACCodec(device=DEVICE)
@@ -623,4 +586,4 @@ if SOURCE_FILES and TARGET_FILE:
 
     plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_dac, codec_dac.sample_rate)
 else:
-    print("Set SOURCE_FILES and TARGET_FILE above, then re-run.")
+    print("Set SOURCE_FILES and TARGET_FILE in config.toml, then re-run.")
