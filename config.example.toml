@@ -12,7 +12,7 @@ file = "audio/target_voice.wav"
 
 [grains]
 size = 2   # consecutive latent vectors per grain
-stride = 1 # hop between grains (1 = maximum overlap)
+stride = 1 # step between grains (1 = max overlap, grain_size = no overlap)
 
 [matching]
 temperature = 0.01 # lower = more faithful; higher = more random
