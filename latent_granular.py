@@ -28,6 +28,12 @@ class Codec(ABC):
 
     @property
     @abstractmethod
+    def name(self) -> str:
+        """Short identifier used for cache filenames (e.g. 'm2l', 'dac')."""
+        ...
+
+    @property
+    @abstractmethod
     def sample_rate(self) -> int: ...
 
     @property
@@ -81,6 +87,10 @@ class Music2LatentCodec(Codec):
         self._enc_dec = EncoderDecoder(device=self._device)
 
     @property
+    def name(self) -> str:
+        return "m2l"
+
+    @property
     def sample_rate(self) -> int:
         return 44_100
 
@@ -123,6 +133,10 @@ class DACCodec(Codec):
         self._device = device or DEVICE
         model_path = dac.utils.download(model_type=model_type)
         self._model = dac.DAC.load(model_path).to(self._device).eval()
+
+    @property
+    def name(self) -> str:
+        return "dac"
 
     @property
     def sample_rate(self) -> int:
@@ -179,27 +193,41 @@ class GranularCodebook:
     def build(self, paths: Sequence[str | Path]):
         """Encode source files and segment into grains.
 
-        Each file is segmented independently so no grains span file
-        boundaries.  *paths* is the flat list of WAV files to encode.
+        Latents are cached as ``<stem>.<codec_name>.pt`` next to each WAV
+        so encoding only happens once per file.  Segmentation into grains
+        (controlled by grain_size / stride) is always recomputed — it's cheap.
         """
         all_grains: list[torch.Tensor] = []
-        self.grain_sources: list[str] = []
+        self.grain_sources = []
         sr = self.codec.sample_rate
+        codec_name = self.codec.name
+        encoded, cached = 0, 0
 
         for p in paths:
-            print(f"  Encoding {p} ...")
-            y, _ = librosa.load(str(p), sr=sr, mono=True)
-            lat = self.codec.encode(y)  # (1, dim, T)
-            file_grains = self._segment(lat.cpu())
+            p = Path(p)
+            cache_path = p.with_suffix(f".{codec_name}.pt")
+
+            if cache_path.exists():
+                lat = torch.load(cache_path, weights_only=True)
+                cached += 1
+            else:
+                print(f"  Encoding {p.name} ...")
+                y, _ = librosa.load(str(p), sr=sr, mono=True)
+                lat = self.codec.encode(y).cpu()  # (1, dim, T)
+                torch.save(lat, cache_path)
+                encoded += 1
+
+            file_grains = self._segment(lat)
             all_grains.append(file_grains)
-            self.grain_sources.extend([Path(p).name] * file_grains.shape[0])
+            self.grain_sources.extend([p.name] * file_grains.shape[0])
 
         self.grains = torch.cat(all_grains, dim=0)
 
         print(
             f"Codebook: {self.grains.shape[0]} grains  "
             f"(grain_size={self.grain_size}, stride={self.stride}, "
-            f"latent_dim={self.codec.latent_dim})"
+            f"latent_dim={self.codec.latent_dim})  "
+            f"[{encoded} encoded, {cached} cached]"
         )
 
     def save(self, path: str | Path):
