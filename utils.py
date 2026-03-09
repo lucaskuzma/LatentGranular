@@ -1,8 +1,7 @@
-"""Audio preprocessing: chunking at zero crossings and augmentation.
+"""Audio preprocessing: silence stripping and augmentation.
 
-Both steps write WAV files into a ``<stem>_chunks/`` folder next to each
-source file so they only run once.  The codebook builder then just encodes
-whatever is in those folders.
+Writes results into a cache directory next to each source file so they
+only run once.  The codebook builder then just encodes whatever is there.
 """
 
 from pathlib import Path
@@ -12,88 +11,50 @@ import numpy as np
 import soundfile as sf
 
 
-def _find_zero_crossing_before(audio: np.ndarray, pos: int) -> int:
-    """Walk backwards from *pos* to find the most recent zero crossing.
-    Returns *pos* unchanged if none found (hard cut)."""
-    for i in range(pos, max(pos - 4096, 0), -1):
-        if i > 0 and np.sign(audio[i]) != np.sign(audio[i - 1]):
-            return i
-    return pos
-
-
-def _is_silent(audio: np.ndarray, top_db: float = 40.0) -> bool:
-    """True if the audio is below the silence threshold."""
-    rms = np.sqrt(np.mean(audio ** 2))
-    if rms == 0:
-        return True
-    return 20 * np.log10(rms / np.max(np.abs(audio) + 1e-10)) < -top_db
-
-
-def _chunk_audio(
+def _augment(
     audio: np.ndarray,
-    sr: int,
-    max_length_ms: float,
-    max_count: int,
-    silence_top_db: float = 40.0,
-) -> list[np.ndarray]:
-    """Split *audio* into chunks of at most *max_length_ms*, trimmed at zero
-    crossings.  Silent chunks are dropped.  Returns up to *max_count* chunks."""
-    max_samples = int(sr * max_length_ms / 1000.0)
-    chunks: list[np.ndarray] = []
-    pos = 0
-
-    while pos < len(audio) and len(chunks) < max_count:
-        end = min(pos + max_samples, len(audio))
-        if end < len(audio):
-            end = _find_zero_crossing_before(audio, end)
-        chunk = audio[pos:end]
-        pos = end
-
-        if len(chunk) == 0:
-            continue
-
-        # trim leading/trailing silence from each chunk
-        trimmed, _ = librosa.effects.trim(chunk, top_db=silence_top_db)
-        if len(trimmed) == 0 or _is_silent(trimmed, silence_top_db):
-            continue
-
-        chunks.append(trimmed)
-
-    return chunks
-
-
-def _augment_chunk(
-    chunk: np.ndarray,
     sr: int,
     pitch_shifts: list[int],
     volume_scales: list[float],
 ) -> list[tuple[str, np.ndarray]]:
-    """Return a list of (suffix, audio) pairs for augmented variants."""
+    """Return (suffix, audio) pairs for the full n^2 augmentation grid.
+
+    Every combination of pitch and volume is produced, plus pitch-only
+    and volume-only variants.
+    """
     variants: list[tuple[str, np.ndarray]] = []
-    for vol in volume_scales:
-        variants.append((f"_vol{vol:.1f}", chunk * vol))
+
     for steps in pitch_shifts:
-        sign = "p" if steps >= 0 else "m"
-        variants.append(
-            (f"_pitch{sign}{abs(steps)}", librosa.effects.pitch_shift(chunk, sr=sr, n_steps=steps))
-        )
+        sign = "+" if steps >= 0 else ""
+        pitched = librosa.effects.pitch_shift(audio, sr=sr, n_steps=steps)
+        # pitch-only at original volume
+        variants.append((f"_p{sign}{steps}", pitched))
+        # pitch x volume
+        for vol in volume_scales:
+            v_pct = int(vol * 100)
+            variants.append((f"_p{sign}{steps}_v{v_pct}", pitched * vol))
+
+    for vol in volume_scales:
+        v_pct = int(vol * 100)
+        # volume-only at original pitch
+        variants.append((f"_v{v_pct}", audio * vol))
+
     return variants
 
 
 def prepare_source_files(
     paths: list[str | Path],
     sr: int = 44_100,
-    chunk_enabled: bool = False,
-    max_length_ms: float = 4000.0,
-    max_count: int = 64,
+    strip_silence: bool = True,
     augment_enabled: bool = False,
     pitch_shifts: list[int] | None = None,
     volume_scales: list[float] | None = None,
 ) -> list[Path]:
-    """Preprocess source files (chunk + augment) and return paths to encode.
+    """Preprocess source files and return paths to encode.
 
-    For each source file, a ``<stem>_chunks/`` folder is created alongside it.
-    If the folder already contains WAV files the step is skipped.
+    For each source file, a cache directory is created alongside it using
+    the source file's name (without extension).  If the directory already
+    contains WAV files the step is skipped.
 
     Returns a flat list of all WAV paths the codebook builder should encode.
     """
@@ -110,46 +71,40 @@ def prepare_source_files(
             print(f"  WARNING: {p} not found, skipping")
             continue
 
-        if not chunk_enabled and not augment_enabled:
+        if not strip_silence and not augment_enabled:
             all_paths.append(p)
             continue
 
-        chunk_dir = p.parent / f"{p.stem}_chunks"
-        existing = sorted(chunk_dir.glob("*.wav")) if chunk_dir.exists() else []
+        cache_dir = p.parent / p.stem
+        existing = sorted(cache_dir.glob("*.wav")) if cache_dir.exists() else []
 
         if existing:
-            print(f"  {p.name}: {len(existing)} prepared files already in {chunk_dir.name}/")
+            print(f"  {p.name}: {len(existing)} prepared files in {cache_dir.name}/")
             all_paths.extend(existing)
             continue
 
-        chunk_dir.mkdir(exist_ok=True)
+        cache_dir.mkdir(exist_ok=True)
         y, _ = librosa.load(str(p), sr=sr, mono=True)
-        y, _ = librosa.effects.trim(y, top_db=40)
+
+        if strip_silence:
+            intervals = librosa.effects.split(y, top_db=40)
+            y = np.concatenate([y[start:end] for start, end in intervals])
+
         y = librosa.util.normalize(y)
 
-        if chunk_enabled:
-            chunks = _chunk_audio(y, sr, max_length_ms, max_count)
-        else:
-            chunks = [y]
+        # save the processed original
+        out = cache_dir / f"{p.stem}.wav"
+        sf.write(str(out), y, sr)
+        all_paths.append(out)
+        written = 1
 
-        written = 0
-        for ci, chunk in enumerate(chunks):
-            # original chunk
-            name = f"{p.stem}_{ci:03d}.wav"
-            out = chunk_dir / name
-            sf.write(str(out), chunk, sr)
-            all_paths.append(out)
-            written += 1
+        if augment_enabled:
+            for suffix, variant in _augment(y, sr, pitch_shifts, volume_scales):
+                aug_out = cache_dir / f"{p.stem}{suffix}.wav"
+                sf.write(str(aug_out), variant, sr)
+                all_paths.append(aug_out)
+                written += 1
 
-            # augmented variants
-            if augment_enabled:
-                for suffix, variant in _augment_chunk(chunk, sr, pitch_shifts, volume_scales):
-                    aug_name = f"{p.stem}_{ci:03d}{suffix}.wav"
-                    aug_out = chunk_dir / aug_name
-                    sf.write(str(aug_out), variant, sr)
-                    all_paths.append(aug_out)
-                    written += 1
-
-        print(f"  {p.name}: wrote {written} files to {chunk_dir.name}/")
+        print(f"  {p.name}: wrote {written} files to {cache_dir.name}/")
 
     return all_paths

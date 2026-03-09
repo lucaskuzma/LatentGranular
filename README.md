@@ -21,13 +21,12 @@ the source's timbral character — no model training required.
 |---|---|---|
 | **Codec support** | Music2Latent only | Codec-agnostic abstraction — ships with Music2Latent *and* DAC (MIT licensed) |
 | **Matching** | Per-grain loop with scipy `cdist` on CPU | Vectorized cosine similarity via PyTorch on GPU |
-| **Overlap handling** | Grains placed without overlap averaging | Overlap-add with averaging for smoother reassembly |
 | **Output normalization** | Hardcoded `* 31000` int16 | Proper peak normalization, float32 WAV output |
 | **Stereo** | Hardcoded duplicate-to-stereo | Mono throughout (clean foundation for future stereo) |
-| **Codebook stride** | Stride parameter only affected target, not codebook building | Stride applied consistently to both source and target segmentation |
+| **Stride** | Single stride parameter, used inconsistently | Separate concerns: dense codebook stride for coverage, target always non-overlapping (stride=grain_size) — decoder handles interpolation |
 | **Persistence** | None | Codebooks can be saved/loaded with `torch.save` |
-| **Visualization** | None | Distance heatmaps, grain selection plots, spectrograms |
-| **Preprocessing** | None (augmentation in-memory, re-computed every run) | Chunking at zero crossings + augmentation saved to disk, cached in `<stem>_chunks/` folders |
+| **Visualization** | None | Distance heatmaps, grain selection plots, source breakdown, spectrograms |
+| **Preprocessing** | None (augmentation in-memory, re-computed every run) | Silence stripping + full n^2 pitch x volume augmentation grid, cached to disk in `<stem>/` folders |
 | **DAC comparison** | N/A | Automatic grain-size scaling to match time windows across codecs |
 
 ## Setup

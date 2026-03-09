@@ -172,28 +172,30 @@ class GranularCodebook:
         self.stride = stride
 
         self.grains: Optional[torch.Tensor] = None  # (N, dim, grain_size)
-        self._source_latents: Optional[torch.Tensor] = None
+        self.grain_sources: list[str] = []
 
     # ── public API ───────────────────────────────────────────────────────
 
     def build(self, paths: Sequence[str | Path]):
         """Encode source files and segment into grains.
 
-        Preprocessing (chunking, augmentation) should already be done —
-        *paths* is the flat list of WAV files to encode.
+        Each file is segmented independently so no grains span file
+        boundaries.  *paths* is the flat list of WAV files to encode.
         """
-        all_latents: list[torch.Tensor] = []
+        all_grains: list[torch.Tensor] = []
+        self.grain_sources: list[str] = []
         sr = self.codec.sample_rate
 
         for p in paths:
             print(f"  Encoding {p} ...")
             y, _ = librosa.load(str(p), sr=sr, mono=True)
             lat = self.codec.encode(y)  # (1, dim, T)
-            all_latents.append(lat.cpu())
+            file_grains = self._segment(lat.cpu())
+            all_grains.append(file_grains)
+            self.grain_sources.extend([Path(p).name] * file_grains.shape[0])
 
-        full = torch.cat(all_latents, dim=-1)  # (1, dim, total_T)
-        self._source_latents = full
-        self.grains = self._segment(full)
+        self.grains = torch.cat(all_grains, dim=0)
+
         print(
             f"Codebook: {self.grains.shape[0]} grains  "
             f"(grain_size={self.grain_size}, stride={self.stride}, "
@@ -208,6 +210,7 @@ class GranularCodebook:
                 "stride": self.stride,
                 "codec_class": type(self.codec).__name__,
                 "latent_dim": self.codec.latent_dim,
+                "grain_sources": getattr(self, "grain_sources", []),
             },
             path,
         )
@@ -217,6 +220,7 @@ class GranularCodebook:
         self.grains = data["grains"]
         self.grain_size = data["grain_size"]
         self.stride = data["stride"]
+        self.grain_sources = data.get("grain_sources", [])
         print(f"Loaded codebook: {self.grains.shape[0]} grains")
 
     # ── internals ────────────────────────────────────────────────────────
@@ -275,7 +279,16 @@ def match_target(
         y = y[: int(sr * max_duration)]
 
     target_latents = codec.encode(y)  # (1, dim, T)
-    target_grains = codebook._segment(target_latents)  # (M, dim, gs)
+    # Target is segmented with stride=grain_size (non-overlapping).
+    # The codebook uses its own (typically denser) stride for coverage,
+    # but at resynthesis we just concatenate replacement grains end-to-end
+    # and let the decoder's implicit interpolation handle continuity.
+    gs = codebook.grain_size
+    _, dim, T_enc = target_latents.shape
+    n_target_grains = (T_enc - gs) // gs + 1
+    target_grains = torch.stack(
+        [target_latents[0, :, i * gs : i * gs + gs] for i in range(n_target_grains)]
+    )  # (M, dim, gs)
 
     db = codebook.grains.to(DEVICE)  # (N, dim, gs)
     N = db.shape[0]
@@ -287,10 +300,7 @@ def match_target(
     all_distances: list[np.ndarray] = []
     result_grains: list[torch.Tensor] = []
 
-    gs = codebook.grain_size
-    stride = codebook.stride
-
-    for i in range(target_grains.shape[0]):
+    for i in range(n_target_grains):
         tg = target_grains[i : i + 1].to(DEVICE)  # (1, dim, gs)
         tg_flat = tg.reshape(1, -1)
         tg_flat_norm = F.normalize(tg_flat, dim=-1)
@@ -315,20 +325,8 @@ def match_target(
             result_grains.append(db[idx].cpu())
         selected_indices.append(idx)
 
-    # Reassemble: place grains at their stride positions, averaging overlaps
-    total_len = (len(result_grains) - 1) * stride + gs
-    _, dim, _ = target_latents.shape
-    hybrid = torch.zeros(dim, total_len)
-    counts = torch.zeros(1, total_len)
-
-    for i, grain in enumerate(result_grains):
-        start = i * stride
-        hybrid[:, start : start + gs] += grain
-        counts[:, start : start + gs] += 1.0
-
-    counts = counts.clamp(min=1.0)
-    hybrid = hybrid / counts
-    hybrid = hybrid.unsqueeze(0)  # (1, dim, T')
+    # Reassemble: concatenate replacement grains end-to-end
+    hybrid = torch.cat(result_grains, dim=-1).unsqueeze(0)  # (1, dim, M*gs)
 
     # Trim or pad to match original target length
     T_target = target_latents.shape[-1]
@@ -392,14 +390,15 @@ import matplotlib.pyplot as plt
 
 
 def plot_distance_heatmap(result: MatchResult, max_codebook_grains: int = 500):
-    """Heatmap of cosine distances: target grains (y) vs codebook grains (x)."""
-    dists = result.distances[:, :max_codebook_grains]
+    """Heatmap of cosine similarity: target grains (y) vs codebook grains (x).
+    Bright = good match."""
+    similarity = 1.0 - result.distances[:, :max_codebook_grains]
     fig, ax = plt.subplots(figsize=(12, 4))
-    im = ax.imshow(dists, aspect="auto", origin="lower", cmap="viridis")
+    im = ax.imshow(similarity, aspect="auto", origin="lower", cmap="inferno")
     ax.set_xlabel("Codebook grain index")
     ax.set_ylabel("Target grain index")
-    ax.set_title("Cosine distance: target ↔ codebook")
-    fig.colorbar(im, ax=ax, label="cosine distance")
+    ax.set_title("Cosine similarity: target ↔ codebook (bright = good match)")
+    fig.colorbar(im, ax=ax, label="cosine similarity")
     plt.tight_layout()
     plt.show()
 
@@ -456,6 +455,54 @@ def plot_min_distances(result: MatchResult):
     plt.show()
 
 
+def _classify_source(name: str) -> str:
+    """Derive a category from a filename like 'top_scream_p+5_v30.wav'."""
+    stem = Path(name).stem
+    has_pitch = "_p+" in stem or "_p-" in stem
+    has_vol = "_v" in stem
+    if has_pitch and has_vol:
+        return "pitch+volume"
+    if has_pitch:
+        return "pitch"
+    if has_vol:
+        return "volume"
+    return "original"
+
+
+def plot_source_breakdown(result: MatchResult, codebook: GranularCodebook):
+    """Show which source categories (original, pitch aug, volume aug) were
+    selected and how often."""
+    if not hasattr(codebook, "grain_sources") or not codebook.grain_sources:
+        print("No grain source info available (rebuild codebook to enable).")
+        return
+
+    categories = [_classify_source(codebook.grain_sources[i]) for i in result.selected_indices]
+
+    from collections import Counter
+    counts = Counter(categories)
+    labels = sorted(counts.keys())
+    values = [counts[l] for l in labels]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 3), gridspec_kw={"width_ratios": [1, 3]})
+
+    # pie chart
+    axes[0].pie(values, labels=labels, autopct="%1.0f%%", startangle=90)
+    axes[0].set_title("Selected grain sources")
+
+    # timeline
+    cat_to_num = {l: i for i, l in enumerate(labels)}
+    cat_nums = [cat_to_num[c] for c in categories]
+    colors = [plt.cm.tab10(n) for n in cat_nums]
+    axes[1].scatter(range(len(categories)), cat_nums, c=colors, s=4, alpha=0.6)
+    axes[1].set_yticks(range(len(labels)))
+    axes[1].set_yticklabels(labels)
+    axes[1].set_xlabel("Target grain step")
+    axes[1].set_title("Source category over time")
+
+    plt.tight_layout()
+    plt.show()
+
+
 # %% Configuration — reads from config.toml (gitignored)
 # Copy config.example.toml to get started:
 #     cp config.example.toml config.toml
@@ -475,14 +522,12 @@ with open(_cfg_path, "rb") as f:
 SOURCE_FILES: list[str] = CFG["source"]["files"]
 TARGET_FILE: str = CFG["target"]["file"]
 GRAIN_SIZE: int = CFG["grains"]["size"]
-STRIDE: int = CFG["grains"]["stride"]
+STRIDE: int = CFG["grains"].get("stride", 1)
 TEMPERATURE: float = CFG["matching"]["temperature"]
 THRESHOLD: float = CFG["matching"]["threshold"]
 
 _prep = CFG.get("preprocessing", {})
-CHUNK_ENABLED: bool = _prep.get("chunk", False)
-CHUNK_MAX_MS: float = _prep.get("max_length_ms", 4000)
-CHUNK_MAX_COUNT: int = _prep.get("max_count", 64)
+STRIP_SILENCE: bool = _prep.get("strip_silence", True)
 AUGMENT_ENABLED: bool = _prep.get("augment", False)
 PITCH_SHIFTS: list[int] = _prep.get("pitch_shifts", [-5, -2, 2, 5])
 VOLUME_SCALES: list[float] = _prep.get("volume_scales", [0.3, 0.7])
@@ -491,9 +536,9 @@ print(f"Source: {SOURCE_FILES}")
 print(f"Target: {TARGET_FILE}")
 print(f"Grains: size={GRAIN_SIZE}, stride={STRIDE}")
 print(f"Matching: temperature={TEMPERATURE}, threshold={THRESHOLD}")
-print(f"Preprocessing: chunk={CHUNK_ENABLED} (max {CHUNK_MAX_MS}ms, max {CHUNK_MAX_COUNT}), augment={AUGMENT_ENABLED}")
+print(f"Preprocessing: strip_silence={STRIP_SILENCE}, augment={AUGMENT_ENABLED}")
 
-# %% Preprocess sources — chunk and/or augment to disk
+# %% Preprocess sources — strip silence + augment to disk
 
 from utils import prepare_source_files
 
@@ -501,9 +546,7 @@ if SOURCE_FILES:
     prepared_files = prepare_source_files(
         SOURCE_FILES,
         sr=44_100,
-        chunk_enabled=CHUNK_ENABLED,
-        max_length_ms=CHUNK_MAX_MS,
-        max_count=CHUNK_MAX_COUNT,
+        strip_silence=STRIP_SILENCE,
         augment_enabled=AUGMENT_ENABLED,
         pitch_shifts=PITCH_SHIFTS,
         volume_scales=VOLUME_SCALES,
@@ -541,6 +584,7 @@ if SOURCE_FILES and TARGET_FILE:
     plot_distance_heatmap(result_m2l)
     plot_grain_selection(result_m2l)
     plot_min_distances(result_m2l)
+    plot_source_breakdown(result_m2l, codebook_m2l)
     plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_m2l, codec_m2l.sample_rate)
 
 # %% Run: DAC (MIT licensed) — same source/target for comparison

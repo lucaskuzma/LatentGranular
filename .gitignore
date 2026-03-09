@@ -2,5 +2,4 @@
 audio/
 .venv/
 config.toml
-*_chunks/
 *.pyc

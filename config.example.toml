@@ -11,19 +11,17 @@ files = [
 file = "audio/target_voice.wav"
 
 [grains]
-size = 2   # consecutive latent vectors per grain
-stride = 1 # step between grains (1 = max overlap, grain_size = no overlap)
+size = 2              # consecutive latent vectors per grain
+stride = 1            # step between codebook grains (1 = max overlap, size = no overlap)
 
 [matching]
 temperature = 0.01 # lower = more faithful; higher = more random
 threshold = 1.0    # cosine distance above which the target grain is kept as-is
 
-# Preprocessing: chunk + augment source files and save to disk.
-# Results are cached in <stem>_chunks/ folders next to each source file.
+# Preprocessing: strip silence + augment source files, saved to disk.
+# Results are cached in <stem>/ folders next to each source file.
 [preprocessing]
-chunk = true                  # split source files into shorter segments
-max_length_ms = 4000          # maximum chunk length in ms, trimmed at zero crossings
-max_count = 64                # max chunks per source file
-augment = true                # generate pitch-shifted and volume-scaled variants
+strip_silence = true          # trim leading/trailing silence
+augment = false               # generate pitch x volume augmentation grid
 pitch_shifts = [-5, -2, 2, 5]
 volume_scales = [0.3, 0.7]
