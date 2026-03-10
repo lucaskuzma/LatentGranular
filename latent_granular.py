@@ -651,3 +651,100 @@ if SOURCE_FILES and TARGET_FILE:
     plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_dac, codec_dac.sample_rate)
 else:
     print("Set SOURCE_FILES and TARGET_FILE in config.toml, then re-run.")
+
+# %% Envelope Follower Resynthesis
+# Instead of matching by latent similarity, index into the codebook
+# purely by the target's amplitude envelope. Codebook grains are sorted
+# by L2 norm (energy proxy), then the target's per-grain RMS picks a
+# position in that sorted order. Quiet → quiet grains, loud → loud grains.
+
+
+def envelope_follower_resynth(
+    target_path: str | Path,
+    codebook: GranularCodebook,
+    max_duration: Optional[float] = None,
+) -> MatchResult:
+    """Select codebook grains by mapping target amplitude to grain energy."""
+    codec = codebook.codec
+    sr = codec.sample_rate
+
+    y, _ = librosa.load(str(target_path), sr=sr, mono=True)
+    if max_duration is not None:
+        y = y[: int(sr * max_duration)]
+
+    target_latents = codec.encode(y)  # (1, dim, T)
+
+    gs = codebook.grain_size
+    _, dim, T_enc = target_latents.shape
+    n_target_grains = (T_enc - gs) // gs + 1
+
+    # RMS envelope of target audio, one value per grain
+    samples_per_vector = sr / codec.latent_rate
+    hop = int(gs * samples_per_vector)
+
+    target_rms = np.array([
+        np.sqrt(np.mean(y[int(i * gs * samples_per_vector):
+                           int(i * gs * samples_per_vector) + hop] ** 2))
+        if int(i * gs * samples_per_vector) < len(y) else 0.0
+        for i in range(n_target_grains)
+    ])
+
+    rms_min, rms_max = target_rms.min(), target_rms.max()
+    if rms_max - rms_min > 1e-8:
+        rms_norm = (target_rms - rms_min) / (rms_max - rms_min)
+    else:
+        rms_norm = np.zeros_like(target_rms)
+
+    # Sort codebook grains by L2 norm (energy proxy in latent space)
+    db = codebook.grains  # (N, dim, gs)
+    N = db.shape[0]
+    grain_norms = db.reshape(N, -1).norm(dim=-1)
+    sorted_indices = grain_norms.argsort()  # lowest energy → index 0
+
+    selected_indices: list[int] = []
+    result_grains: list[torch.Tensor] = []
+
+    for i in range(n_target_grains):
+        pos = int(rms_norm[i] * (N - 1))
+        pos = np.clip(pos, 0, N - 1)
+        cb_idx = sorted_indices[pos].item()
+        selected_indices.append(cb_idx)
+        result_grains.append(db[cb_idx])
+
+    hybrid = torch.cat(result_grains, dim=-1).unsqueeze(0)
+
+    T_target = target_latents.shape[-1]
+    if hybrid.shape[-1] > T_target:
+        hybrid = hybrid[:, :, :T_target]
+    elif hybrid.shape[-1] < T_target:
+        hybrid = F.pad(hybrid, (0, T_target - hybrid.shape[-1]))
+
+    # Distances array is meaningless here, but MatchResult expects it
+    distances = np.zeros((n_target_grains, N), dtype=np.float32)
+
+    return MatchResult(
+        hybrid_latents=hybrid,
+        target_latents=target_latents.cpu(),
+        distances=distances,
+        selected_indices=selected_indices,
+    )
+
+
+# %% Run envelope follower (Music2Latent)
+
+if SOURCE_FILES and TARGET_FILE:
+    result_env = envelope_follower_resynth(TARGET_FILE, codebook_m2l)
+    output_env = reconstruct(result_env, codec_m2l, output_path="audio/output_env_follower.wav")
+
+    print("── Target ──")
+    tgt_y, _ = librosa.load(TARGET_FILE, sr=codec_m2l.sample_rate, mono=True)
+    display(Audio(tgt_y, rate=codec_m2l.sample_rate))
+    print("── Envelope follower resynthesis ──")
+    display(Audio(output_env, rate=codec_m2l.sample_rate))
+    print("── Latent-matched resynthesis (for comparison) ──")
+    display(Audio(output_m2l, rate=codec_m2l.sample_rate))
+
+    plot_grain_selection(result_env)
+    plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_env, codec_m2l.sample_rate)
+
+# %%
