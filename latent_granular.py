@@ -504,14 +504,19 @@ def plot_source_breakdown(result: MatchResult, codebook: GranularCodebook):
         print("No grain source info available (rebuild codebook to enable).")
         return
 
-    categories = [_classify_source(codebook.grain_sources[i]) for i in result.selected_indices]
+    categories = [
+        _classify_source(codebook.grain_sources[i]) for i in result.selected_indices
+    ]
 
     from collections import Counter
+
     counts = Counter(categories)
     labels = sorted(counts.keys())
     values = [counts[l] for l in labels]
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 3), gridspec_kw={"width_ratios": [1, 3]})
+    fig, axes = plt.subplots(
+        1, 2, figsize=(14, 3), gridspec_kw={"width_ratios": [1, 3]}
+    )
 
     # pie chart
     axes[0].pie(values, labels=labels, autopct="%1.0f%%", startangle=90)
@@ -682,12 +687,26 @@ def envelope_follower_resynth(
     samples_per_vector = sr / codec.latent_rate
     hop = int(gs * samples_per_vector)
 
-    target_rms = np.array([
-        np.sqrt(np.mean(y[int(i * gs * samples_per_vector):
-                           int(i * gs * samples_per_vector) + hop] ** 2))
-        if int(i * gs * samples_per_vector) < len(y) else 0.0
-        for i in range(n_target_grains)
-    ])
+    target_rms = np.array(
+        [
+            (
+                np.sqrt(
+                    np.mean(
+                        y[
+                            int(i * gs * samples_per_vector) : int(
+                                i * gs * samples_per_vector
+                            )
+                            + hop
+                        ]
+                        ** 2
+                    )
+                )
+                if int(i * gs * samples_per_vector) < len(y)
+                else 0.0
+            )
+            for i in range(n_target_grains)
+        ]
+    )
 
     rms_min, rms_max = target_rms.min(), target_rms.max()
     if rms_max - rms_min > 1e-8:
@@ -734,7 +753,9 @@ def envelope_follower_resynth(
 
 if SOURCE_FILES and TARGET_FILE:
     result_env = envelope_follower_resynth(TARGET_FILE, codebook_m2l)
-    output_env = reconstruct(result_env, codec_m2l, output_path="audio/output_env_follower.wav")
+    output_env = reconstruct(
+        result_env, codec_m2l, output_path="audio/output_env_follower.wav"
+    )
 
     print("── Target ──")
     tgt_y, _ = librosa.load(TARGET_FILE, sr=codec_m2l.sample_rate, mono=True)
@@ -746,5 +767,65 @@ if SOURCE_FILES and TARGET_FILE:
 
     plot_grain_selection(result_env)
     plot_spectrograms(SOURCE_FILES[0], TARGET_FILE, output_env, codec_m2l.sample_rate)
+
+# %% Latent Space Exploration — Additive Dimension Oscillation
+# Step through 8 codebook entries. For each one, progressively oscillate
+# latent dimensions one at a time (1.25 s apart → out of phase by 0.25 cycles).
+# By the end of each 10 s segment, 8 dimensions are modulating simultaneously.
+
+MOD_DEPTH = 4.0  # peak amplitude of the sinusoidal modulation
+MOD_RATE = 0.5  # Hz — oscillation frequency for each dimension
+
+if SOURCE_FILES and TARGET_FILE:
+    n_codes = 8
+    n_dims_to_mod = 8
+    onset_interval = 1.25  # seconds between each new dimension kicking in
+    segment_duration = n_dims_to_mod * onset_interval  # 10 s per code
+    total_duration = n_codes * segment_duration  # 80 s total
+
+    db = codebook_m2l.grains  # (N, dim, gs)
+    N_cb = db.shape[0]
+    lr = codec_m2l.latent_rate
+
+    code_indices = np.linspace(0, N_cb - 1, n_codes, dtype=int)
+
+    total_vectors = int(total_duration * lr)
+    latent_seq = torch.zeros(1, codec_m2l.latent_dim, total_vectors)
+
+    onsets = torch.arange(n_dims_to_mod, dtype=torch.float32) * onset_interval
+
+    for ci, cb_idx in enumerate(code_indices):
+        base = db[cb_idx].mean(dim=-1)  # (dim,)
+        seg_start = int(ci * segment_duration * lr)
+        seg_end = min(int((ci + 1) * segment_duration * lr), total_vectors)
+        seg_len = seg_end - seg_start
+
+        t = torch.arange(seg_len, dtype=torch.float32) / lr  # (V,)
+        active = (t.unsqueeze(1) >= onsets.unsqueeze(0)).float()  # (V, D)
+        phase = 2 * np.pi * MOD_RATE * (t.unsqueeze(1) - onsets.unsqueeze(0))
+        mod = MOD_DEPTH * torch.sin(phase) * active  # (V, D)
+
+        segment = base.unsqueeze(0).expand(seg_len, -1).clone()  # (V, dim)
+        segment[:, :n_dims_to_mod] += mod
+        latent_seq[0, :, seg_start:seg_end] = segment.T
+
+    wav_chunks = []
+    for ci in range(n_codes):
+        seg_start = int(ci * segment_duration * lr)
+        seg_end = min(int((ci + 1) * segment_duration * lr), total_vectors)
+        wav_chunks.append(codec_m2l.decode(latent_seq[:, :, seg_start:seg_end]))
+        print(f"  Decoded code {ci + 1}/{n_codes}")
+    wav_explore = np.concatenate(wav_chunks)
+    wav_explore = wav_explore / (np.abs(wav_explore).max() + 1e-8)
+
+    out_path = "audio/latent_exploration.wav"
+    sf.write(out_path, wav_explore, codec_m2l.sample_rate)
+    print(
+        f"Wrote {out_path}  ({total_duration:.0f} s, "
+        f"{n_codes} codes × {segment_duration:.1f} s)"
+    )
+    print(f"MOD_DEPTH={MOD_DEPTH}, MOD_RATE={MOD_RATE} Hz, dims 0–{n_dims_to_mod - 1}")
+    print(f"Codebook indices: {code_indices.tolist()}")
+    display(Audio(wav_explore, rate=codec_m2l.sample_rate))
 
 # %%
