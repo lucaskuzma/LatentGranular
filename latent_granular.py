@@ -833,4 +833,107 @@ if SOURCE_FILES and TARGET_FILE:
     print(f"Codebook indices: {code_indices.tolist()}")
     display(Audio(wav_explore, rate=codec_m2l.sample_rate))
 
+# %% Latent LERP — smooth interpolation through codebook entries
+
+LERP_DURATION = 32.0  # total seconds
+
+if SOURCE_FILES and TARGET_FILE:
+    db = codebook_m2l.grains
+    N_cb = db.shape[0]
+    lr = codec_m2l.latent_rate
+    dim = codec_m2l.latent_dim
+
+    lerp_indices = np.linspace(0, N_cb - 1, 8, dtype=int)
+    anchors = torch.stack([db[i].mean(dim=-1) for i in lerp_indices])  # (8, dim)
+
+    total_vectors = int(LERP_DURATION * lr)
+    latent_seq = torch.zeros(1, dim, total_vectors)
+
+    for v in range(total_vectors):
+        progress = v / (total_vectors - 1) * (len(anchors) - 1)
+        idx_a = int(progress)
+        idx_b = min(idx_a + 1, len(anchors) - 1)
+        frac = progress - idx_a
+        latent_seq[0, :, v] = torch.lerp(anchors[idx_a], anchors[idx_b], frac)
+
+    wav_chunks = []
+    chunk_len = int(10.0 * lr)
+    for i in range(0, total_vectors, chunk_len):
+        end = min(i + chunk_len, total_vectors)
+        wav_chunks.append(codec_m2l.decode(latent_seq[:, :, i:end]))
+        print(
+            f"  Decoded {len(wav_chunks)}/{(total_vectors + chunk_len - 1) // chunk_len}"
+        )
+    wav_lerp = np.concatenate(wav_chunks)
+    wav_lerp = wav_lerp / (np.abs(wav_lerp).max() + 1e-8)
+
+    out_path = "audio/latent_lerp.wav"
+    sf.write(out_path, wav_lerp, codec_m2l.sample_rate)
+    print(f"Wrote {out_path}  ({LERP_DURATION:.0f} s, {len(lerp_indices)} anchors)")
+    print(f"Codebook indices: {lerp_indices.tolist()}")
+    display(Audio(wav_lerp, rate=codec_m2l.sample_rate))
+
+# %%
+
+SCORE_MULTIPLIER = 2
+
+score = [
+    (0, 7),
+    (8, 1),
+    (0, 7),
+    (8, 1),
+    (0, 7),
+    (2, 1),
+    (0, 7),
+    (2, 1),
+    (0, 7),
+    (8, 1),
+    (3, 7),
+    (8, 1),
+    (3, 3),
+    (2, 1),
+    (3, 3),
+    (2, 1),
+    (3, 3),
+    (2, 1),
+    (3, 3),
+    (2, 1),
+]
+
+if SOURCE_FILES and TARGET_FILE:
+    db = codebook_m2l.grains  # (N, dim, grain_size)
+    gs = codebook_m2l.grain_size
+    dim = codec_m2l.latent_dim
+    lr = codec_m2l.latent_rate
+
+    total_steps = sum(dur * SCORE_MULTIPLIER for _, dur in score)
+    total_vectors = total_steps * gs
+    total_seconds = total_vectors / lr
+    print(
+        f"Score: {total_steps} grains × {gs} vectors = {total_vectors} vectors ({total_seconds:.1f} s)"
+    )
+
+    latent_seq = torch.zeros(1, dim, total_vectors)
+
+    prev_vec = db[score[0][0]].mean(dim=-1)  # (dim,)
+    v_pos = 0
+
+    for code_idx, dur in score:
+        target_vec = db[code_idx].mean(dim=-1)
+        n_steps = dur * SCORE_MULTIPLIER
+        for s in range(n_steps):
+            frac = s / max(n_steps - 1, 1)
+            vec = torch.lerp(prev_vec, target_vec, frac)
+            latent_seq[0, :, v_pos : v_pos + gs] = vec.unsqueeze(-1).expand(-1, gs)
+            v_pos += gs
+        prev_vec = target_vec
+
+    wav_score = codec_m2l.decode(latent_seq)
+    wav_score = wav_score / (np.abs(wav_score).max() + 1e-8)
+
+    out_path = "audio/latent_score.wav"
+    sf.write(out_path, wav_score, codec_m2l.sample_rate)
+    print(f"Wrote {out_path}")
+    display(Audio(wav_score, rate=codec_m2l.sample_rate))
+
 # %%
