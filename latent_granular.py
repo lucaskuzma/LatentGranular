@@ -774,14 +774,15 @@ if SOURCE_FILES and TARGET_FILE:
 # By the end of each 10 s segment, 8 dimensions are modulating simultaneously.
 
 MOD_DEPTH = 4.0  # peak amplitude of the sinusoidal modulation
-MOD_RATE = 0.5  # Hz — oscillation frequency for each dimension
+MOD_RATE = 0.125  # Hz — oscillation frequency for each dimension
 
 if SOURCE_FILES and TARGET_FILE:
     n_codes = 8
     n_dims_to_mod = 8
-    onset_interval = 1.25  # seconds between each new dimension kicking in
-    segment_duration = n_dims_to_mod * onset_interval  # 10 s per code
-    total_duration = n_codes * segment_duration  # 80 s total
+    dim_stride = 8  # step between selected dimensions (1 = adjacent, 8 = every 8th)
+    onset_interval = 2  # seconds between each new dimension kicking in
+    segment_duration = n_dims_to_mod * onset_interval
+    total_duration = n_codes * segment_duration
 
     db = codebook_m2l.grains  # (N, dim, gs)
     N_cb = db.shape[0]
@@ -802,11 +803,15 @@ if SOURCE_FILES and TARGET_FILE:
 
         t = torch.arange(seg_len, dtype=torch.float32) / lr  # (V,)
         active = (t.unsqueeze(1) >= onsets.unsqueeze(0)).float()  # (V, D)
-        phase = 2 * np.pi * MOD_RATE * (t.unsqueeze(1) - onsets.unsqueeze(0))
+        freqs = MOD_RATE * (
+            2.0 ** torch.arange(n_dims_to_mod, dtype=torch.float32)
+        )  # (D,)
+        phase = 2 * np.pi * freqs.unsqueeze(0) * (t.unsqueeze(1) - onsets.unsqueeze(0))
         mod = MOD_DEPTH * torch.sin(phase) * active  # (V, D)
 
+        dim_indices = [d * dim_stride for d in range(n_dims_to_mod)]
         segment = base.unsqueeze(0).expand(seg_len, -1).clone()  # (V, dim)
-        segment[:, :n_dims_to_mod] += mod
+        segment[:, dim_indices] += mod
         latent_seq[0, :, seg_start:seg_end] = segment.T
 
     wav_chunks = []
