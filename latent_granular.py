@@ -948,24 +948,25 @@ if SOURCE_FILES and TARGET_FILE:
     total_vectors_dac = total_steps_dac * gs_dac
     total_seconds_dac = total_vectors_dac / lr_dac
     print(
-        f"Score (DAC): {total_steps_dac} grains × {gs_dac} vectors = "
-        f"{total_vectors_dac} vectors ({total_seconds_dac:.1f} s)"
+        f"Score (DAC): {total_vectors_dac} vectors ({total_seconds_dac:.1f} s)"
     )
 
     latent_seq_dac = torch.zeros(1, dim_dac, total_vectors_dac)
 
-    prev_grain = db_dac[score[0][0]]  # (dim, gs_dac)
-    v_pos = 0
-
+    # Build flat list of (vector, duration_in_vectors) from the score
+    score_vectors: list[tuple[torch.Tensor, int]] = []
     for code_idx, dur in score:
-        target_grain = db_dac[code_idx]  # (dim, gs_dac)
-        n_steps = dur * SCORE_MULTIPLIER
-        for s in range(n_steps):
-            frac = s / max(n_steps - 1, 1)
-            grain = torch.lerp(prev_grain, target_grain, frac)
-            latent_seq_dac[0, :, v_pos : v_pos + gs_dac] = grain
-            v_pos += gs_dac
-        prev_grain = target_grain
+        vec = db_dac[code_idx][:, 0]  # single vector (dim,)
+        score_vectors.append((vec, dur * SCORE_MULTIPLIER * gs_dac))
+
+    v_pos = 0
+    for i, (vec, n_vectors) in enumerate(score_vectors):
+        next_vec = score_vectors[i + 1][0] if i + 1 < len(score_vectors) else vec
+        t = torch.linspace(0, 1, n_vectors).unsqueeze(0)  # (1, n_vectors)
+        latent_seq_dac[0, :, v_pos : v_pos + n_vectors] = torch.lerp(
+            vec.unsqueeze(-1), next_vec.unsqueeze(-1), t
+        )
+        v_pos += n_vectors
 
     wav_score_dac = codec_dac.decode(latent_seq_dac)
     wav_score_dac = wav_score_dac / (np.abs(wav_score_dac).max() + 1e-8)
