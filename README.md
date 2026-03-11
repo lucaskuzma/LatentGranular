@@ -57,6 +57,25 @@ cp config.example.toml config.toml
 the repo. Then open `latent_granular.py` in Cursor / VS Code, drop your audio
 files in `audio/`, and run the `# %%` cells top-to-bottom.
 
+## Experimental cells
+
+Beyond the core latent granular resynthesis, the notebook includes cells for
+exploring the latent space directly:
+
+- **Envelope follower resynthesis** — selects codebook grains by mapping the
+  target audio's RMS amplitude to codebook entries sorted by energy (L2 norm).
+  Quiet target moments pull quiet grains, loud moments pull energetic ones.
+
+- **Dimension oscillation** — steps through codebook entries, progressively
+  oscillating individual latent dimensions with configurable depth, rate, and
+  stride. Useful for hearing what each dimension controls.
+
+- **Latent LERP / score** — defines a "score" as a list of `(code_index,
+  duration)` tuples and smoothly interpolates between codes at the vector level.
+  Renders with both Music2Latent and DAC for comparison. DAC's higher latent
+  rate (~86 Hz vs ~10 Hz) gives finer interpolation resolution but introduces
+  a characteristic buzz from its 512-sample hop boundaries.
+
 ## License notes
 
 - **Music2Latent** (Sony CSL Paris): CC BY-NC 4.0 — non-commercial use only.

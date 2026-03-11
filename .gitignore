@@ -4,3 +4,4 @@ audio/
 config.toml
 *.pyc
 *.pt
+transcripts/
