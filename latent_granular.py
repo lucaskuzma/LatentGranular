@@ -936,4 +936,43 @@ if SOURCE_FILES and TARGET_FILE:
     print(f"Wrote {out_path}")
     display(Audio(wav_score, rate=codec_m2l.sample_rate))
 
-# %%
+# %% Score — DAC version
+
+if SOURCE_FILES and TARGET_FILE:
+    db_dac = codebook_dac.grains  # (N, dim, gs_dac)
+    gs_dac = codebook_dac.grain_size
+    dim_dac = codec_dac.latent_dim
+    lr_dac = codec_dac.latent_rate
+
+    total_steps_dac = sum(dur * SCORE_MULTIPLIER for _, dur in score)
+    total_vectors_dac = total_steps_dac * gs_dac
+    total_seconds_dac = total_vectors_dac / lr_dac
+    print(
+        f"Score (DAC): {total_steps_dac} grains × {gs_dac} vectors = "
+        f"{total_vectors_dac} vectors ({total_seconds_dac:.1f} s)"
+    )
+
+    latent_seq_dac = torch.zeros(1, dim_dac, total_vectors_dac)
+
+    prev_vec_dac = db_dac[score[0][0]].mean(dim=-1)
+    v_pos = 0
+
+    for code_idx, dur in score:
+        target_vec_dac = db_dac[code_idx].mean(dim=-1)
+        n_steps = dur * SCORE_MULTIPLIER
+        for s in range(n_steps):
+            frac = s / max(n_steps - 1, 1)
+            vec = torch.lerp(prev_vec_dac, target_vec_dac, frac)
+            latent_seq_dac[0, :, v_pos : v_pos + gs_dac] = vec.unsqueeze(-1).expand(
+                -1, gs_dac
+            )
+            v_pos += gs_dac
+        prev_vec_dac = target_vec_dac
+
+    wav_score_dac = codec_dac.decode(latent_seq_dac)
+    wav_score_dac = wav_score_dac / (np.abs(wav_score_dac).max() + 1e-8)
+
+    out_path = "audio/latent_score_dac.wav"
+    sf.write(out_path, wav_score_dac, codec_dac.sample_rate)
+    print(f"Wrote {out_path}")
+    display(Audio(wav_score_dac, rate=codec_dac.sample_rate))
