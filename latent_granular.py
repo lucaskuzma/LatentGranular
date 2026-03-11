@@ -954,20 +954,18 @@ if SOURCE_FILES and TARGET_FILE:
 
     latent_seq_dac = torch.zeros(1, dim_dac, total_vectors_dac)
 
-    prev_vec_dac = db_dac[score[0][0]].mean(dim=-1)
+    prev_grain = db_dac[score[0][0]]  # (dim, gs_dac)
     v_pos = 0
 
     for code_idx, dur in score:
-        target_vec_dac = db_dac[code_idx].mean(dim=-1)
+        target_grain = db_dac[code_idx]  # (dim, gs_dac)
         n_steps = dur * SCORE_MULTIPLIER
         for s in range(n_steps):
             frac = s / max(n_steps - 1, 1)
-            vec = torch.lerp(prev_vec_dac, target_vec_dac, frac)
-            latent_seq_dac[0, :, v_pos : v_pos + gs_dac] = vec.unsqueeze(-1).expand(
-                -1, gs_dac
-            )
+            grain = torch.lerp(prev_grain, target_grain, frac)
+            latent_seq_dac[0, :, v_pos : v_pos + gs_dac] = grain
             v_pos += gs_dac
-        prev_vec_dac = target_vec_dac
+        prev_grain = target_grain
 
     wav_score_dac = codec_dac.decode(latent_seq_dac)
     wav_score_dac = wav_score_dac / (np.abs(wav_score_dac).max() + 1e-8)
